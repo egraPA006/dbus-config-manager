@@ -11,6 +11,17 @@
 #include <spdlog/spdlog.h>
 #include <thread>
 
+// Constants for D-Bus names and paths
+namespace constants
+{
+const std::string SERVICE_NAME{"com.system.configurationManager"};
+const std::string INTERFACE_NAME{
+    "com.system.configurationManager.Application.Configuration"};
+const std::string CONFIG_CHANGED_SIGNAL{"configurationChanged"};
+const std::string DEFAULT_CONFIG_DIR{"~/com.system.configurationManager/"};
+const std::string DEFAULT_APP_NAME{"confManagerApplication1"};
+}
+
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
@@ -19,6 +30,23 @@ static void initialize_logging()
     auto logger = spdlog::stdout_color_mt("configuration_client");
     logger->set_level(spdlog::level::info);
     spdlog::set_default_logger(logger);
+}
+
+// Helper function to expand home directory path
+std::string expandHomeDirectory(const std::string& path)
+{
+    if (path.empty() || path.find("~/") != 0)
+    {
+        return path;
+    }
+    
+    const char* home = std::getenv("HOME");
+    if (!home)
+    {
+        throw std::runtime_error("HOME environment variable not set");
+    }
+    
+    return std::string(home) + path.substr(1);
 }
 
 class ClientApplication
@@ -30,6 +58,12 @@ class ClientApplication
         : ClientApplication(timeout, timeoutPhrase, true)
     {
     }
+    
+    ClientApplication(int64_t timeout, const std::string& timeoutPhrase,
+                     const std::string& customConfigPath)
+        : ClientApplication(timeout, timeoutPhrase, true, customConfigPath)
+    {
+    }
 
     ~ClientApplication() { stop(); }
 
@@ -37,19 +71,41 @@ class ClientApplication
 
   private:
     ClientApplication(int64_t timeout, const std::string& timeoutPhrase,
-                      bool forceCreate)
+                     bool forceCreate, const std::string& customConfigPath = "")
         : timeout(timeout), timeoutPhrase(timeoutPhrase),
-          configPath(
-              std::string(std::getenv("HOME")) +
-              "/com.system.configurationManager/confManagerApplication1.json"),
           forceCreateConf(forceCreate)
     {
+        // Set config path
+        if (customConfigPath.empty())
+        {
+            configPath = expandHomeDirectory(constants::DEFAULT_CONFIG_DIR) +
+                        constants::DEFAULT_APP_NAME + ".json";
+        }
+        else
+        {
+            configPath = customConfigPath;
+        }
+        
+        spdlog::debug("Using configuration path: {}", configPath);
         initialize();
     }
 
     void initialize()
     {
-        connection = sdbus::createSessionBusConnection();
+        try
+        {
+            connection = sdbus::createSessionBusConnection();
+            if (!connection)
+            {
+                throw std::runtime_error("Failed to create D-Bus connection");
+            }
+            spdlog::debug("D-Bus session connection created successfully");
+        }
+        catch (const std::exception& e)
+        {
+            spdlog::error("Failed to create D-Bus connection: {}", e.what());
+            throw;
+        }
         loadConfiguration();
         setupDBusProxy();
         startTimeoutThread();
@@ -112,18 +168,46 @@ class ClientApplication
 
     void setupDBusProxy()
     {
-        proxy = sdbus::createProxy(
-            *connection,
-            static_cast<sdbus::ServiceName>("com.system.configurationManager"),
-            static_cast<sdbus::ObjectPath>(
-                "/com/system/configurationManager/Application/"
-                "confManagerApplication1"));
+        try
+        {
+            // Extract the application name from config path
+            fs::path configFilePath(configPath);
+            std::string appName = configFilePath.stem().string();
+            
+            // Build the object path
+            std::string objectPath = buildObjectPath(appName);
+            spdlog::debug("Using D-Bus object path: {}", objectPath);
+            
+            proxy = sdbus::createProxy(
+                *connection,
+                static_cast<sdbus::ServiceName>(constants::SERVICE_NAME),
+                static_cast<sdbus::ObjectPath>(objectPath));
 
-        proxy->uponSignal("configurationChanged")
-            .onInterface(
-                "com.system.configurationManager.Application.Configuration")
-            .call([this](const std::map<std::string, sdbus::Variant>& newConfig)
-                  { this->handleConfigurationChange(newConfig); });
+            proxy->uponSignal(constants::CONFIG_CHANGED_SIGNAL)
+                .onInterface(constants::INTERFACE_NAME)
+                .call([this](const std::map<std::string, sdbus::Variant>& newConfig)
+                      { this->handleConfigurationChange(newConfig); });
+                      
+            // Check connection is active
+            if (!proxy->isConnected())
+            {
+                throw std::runtime_error("Failed to connect to D-Bus service");
+            }
+            
+            spdlog::debug("D-Bus proxy setup successfully");
+        }
+        catch (const std::exception& e)
+        {
+            spdlog::error("Failed to set up D-Bus proxy: {}", e.what());
+            throw;
+        }
+    }
+    
+    std::string buildObjectPath(const std::string& appName) const
+    {
+        std::string path = "/" + constants::SERVICE_NAME;
+        std::replace(path.begin(), path.end(), '.', '/');
+        return path + "/Application/" + appName;
     }
 
     void handleConfigurationChange(
@@ -226,7 +310,9 @@ int main(int argc, char* argv[])
     {
         int64_t timeout = 1000;
         std::string phrase = "Hey";
+        std::string configPath;
         bool verbose = false;
+        bool createNewConfig = false;
 
         CLI::App app{"Configuration Client Application"};
         app.add_option("--timeout", timeout, "Timeout in milliseconds")
@@ -235,8 +321,14 @@ int main(int argc, char* argv[])
 
         app.add_option("--phrase", phrase, "Timeout message")
             ->default_val("Hey");
+            
+        app.add_option("--config-path", configPath,
+                      "Path to configuration file (default: ~/com.system.configurationManager/confManagerApplication1.json)");
 
         app.add_flag("-v,--verbose", verbose, "Enable verbose logging");
+        
+        app.add_flag("--create-config", createNewConfig,
+                    "Force creation of a new configuration file");
 
         CLI11_PARSE(app, argc, argv);
 
@@ -250,7 +342,9 @@ int main(int argc, char* argv[])
             "Starting with configuration - timeout: {}ms, phrase: '{}'",
             timeout, phrase);
 
-        ClientApplication client_app(timeout, phrase);
+        ClientApplication client_app = configPath.empty()
+            ? ClientApplication(timeout, phrase, createNewConfig)
+            : ClientApplication(timeout, phrase, configPath);
         client_app.run();
     }
     catch (const std::exception& e)

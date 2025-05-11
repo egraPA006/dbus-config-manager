@@ -5,6 +5,17 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Enable more warnings and treat them as errors
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# Collect all source files for formatting
+set(ALL_SOURCE_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/configurationManager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/configurationClient.cpp
+)
+
 find_package(sdbus-c++ 2.0.0 QUIET)
 find_package(spdlog QUIET)
 find_package(nlohmann_json 3.12.0 QUIET)
@@ -107,14 +118,19 @@ if(NOT nlohmann_json_FOUND)
     add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
 endif()
 
+# Define executables
 add_executable(manager configurationManager.cpp)
 add_executable(client configurationClient.cpp)
+
+# Set output directory for binaries
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 target_link_libraries(manager PRIVATE
     sdbus-c++::sdbus-c++
     spdlog::spdlog
     nlohmann_json::nlohmann_json
     ${SYSTEMD_LIB}
+    CLI11::CLI11
 )
 target_link_libraries(client PRIVATE
     sdbus-c++::sdbus-c++
@@ -124,14 +140,43 @@ target_link_libraries(client PRIVATE
     CLI11::CLI11
 )
 
+# Find clang-format for code formatting
 find_program(CLANG_FORMAT "clang-format")
 if(CLANG_FORMAT)
     add_custom_target(format
         COMMAND ${CLANG_FORMAT} -i -style=file ${ALL_SOURCE_FILES}
         COMMENT "Formatting all source files..."
     )
+else()
+    message(STATUS "clang-format not found - formatting target unavailable")
 endif()
 
-install(TARGETS client manager
-  RUNTIME DESTINATION .
+# Add testing target (for future implementation)
+enable_testing()
+add_custom_target(tests
+    COMMAND echo "No tests implemented yet"
+    COMMENT "Running all tests..."
 )
+
+# Installation rules
+install(TARGETS client manager
+    RUNTIME DESTINATION bin
+)
+
+# Install demo script
+install(FILES demo.sh
+    DESTINATION bin
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+)
+
+# Print configuration summary
+message(STATUS "========== Configuration Summary ==========")
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "C++ Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+message(STATUS "Installation prefix: ${CMAKE_INSTALL_PREFIX}")
+message(STATUS "Using sdbus-c++: ${sdbus-c++_FOUND}")
+message(STATUS "Using spdlog: ${spdlog_FOUND}")
+message(STATUS "Using nlohmann_json: ${nlohmann_json_FOUND}")
+message(STATUS "Using CLI11: ${CLI11_FOUND}")
+message(STATUS "Formatting available: ${CLANG_FORMAT}")
+message(STATUS "==========================================")

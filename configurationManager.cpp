@@ -3,6 +3,9 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
+#include <condition_variable>
+#include <csignal>
 #include <nlohmann/json.hpp>
 #include <sdbus-c++/sdbus-c++.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -11,6 +14,7 @@
 #include <systemd/sd-bus.h>
 #include <unordered_set>
 #include <vector>
+#include "CLI/CLI.hpp"
 
 using config_dict = std::map<std::string, sdbus::Variant>;
 namespace nlohmann
@@ -41,6 +45,16 @@ template <> struct adl_serializer<sdbus::Variant>
 } // namespace nlohmann
 using json = nlohmann::json;
 namespace fs = std::filesystem;
+
+// Constants for D-Bus names and paths
+namespace constants
+{
+const std::string CONFIG_DIR_PATH{"~/com.system.configurationManager/"};
+const std::string SERVICE_NAME{"com.system.configurationManager"};
+const std::string INTERFACE_NAME{
+    "com.system.configurationManager.Application.Configuration"};
+const std::string CONFIG_CHANGED_SIGNAL{"configurationChanged"};
+}
 
 static void initialize_logging()
 {
@@ -141,14 +155,58 @@ class ApplicationConfiguration
             throw std::invalid_argument("Value cannot be empty");
         }
 
-        configuration[key] = val;
+        {
+            std::lock_guard<std::mutex> lock(configMutex);
+            configuration[key] = val;
+        }
         emitConfigurationChanged();
-        // NOTE: Maybe we should save changes back to json?
+        // Save changes back to JSON
+        saveConfigToFile();
 
         spdlog::info("Configuration changed for key: {}", key);
     }
 
-    config_dict getConfiguration() const { return configuration; }
+    void saveConfigToFile()
+    {
+        try
+        {
+            json config;
+            {
+                std::lock_guard<std::mutex> lock(configMutex);
+                for (const auto& [key, value] : configuration)
+                {
+                    if (value.containsValueOfType<std::string>())
+                        config[key] = value.get<std::string>();
+                    else if (value.containsValueOfType<int64_t>())
+                        config[key] = value.get<int64_t>();
+                    else if (value.containsValueOfType<double>())
+                        config[key] = value.get<double>();
+                    else if (value.containsValueOfType<bool>())
+                        config[key] = value.get<bool>();
+                }
+            }
+            
+            std::ofstream file(configPath);
+            if (!file)
+            {
+                spdlog::error("Failed to open config file for writing: {}",
+                            configPath);
+                return;
+            }
+            file << config.dump(4);
+            spdlog::debug("Configuration saved to file: {}", configPath);
+        }
+        catch (const std::exception& e)
+        {
+            spdlog::error("Failed to save configuration: {}", e.what());
+        }
+    }
+
+    config_dict getConfiguration() const
+    {
+        std::lock_guard<std::mutex> lock(configMutex);
+        return configuration;
+    }
 
     void registerMethods()
     {
@@ -178,15 +236,22 @@ class ApplicationConfiguration
     config_dict configuration;
     sdbus::InterfaceName interfaceName;
     std::string configPath;
+    mutable std::mutex configMutex;
 };
 
 class ConfigurationManager
 {
   public:
-    static ConfigurationManager& getInstance()
+    static ConfigurationManager& getInstance(const std::string& customConfigDir = "")
     {
-        static ConfigurationManager instance;
-        return instance;
+        static std::once_flag initInstanceFlag;
+        static ConfigurationManager* instance = nullptr;
+        
+        std::call_once(initInstanceFlag, [&customConfigDir]() {
+            instance = new ConfigurationManager(customConfigDir);
+        });
+        
+        return *instance;
     }
 
     ConfigurationManager(const ConfigurationManager&) = delete;
@@ -205,6 +270,14 @@ class ConfigurationManager
         }
 
         return names;
+    }
+    
+    void setConfigDir(const std::string& dir)
+    {
+        if (!dir.empty())
+        {
+            configDir = dir;
+        }
     }
 
     void run()
@@ -225,11 +298,15 @@ class ConfigurationManager
     }
 
   private:
-    ConfigurationManager()
+    ConfigurationManager(const std::string& customConfigDir = "")
     {
         try
         {
             spdlog::debug("Initializing ConfigurationManager");
+            if (!customConfigDir.empty())
+            {
+                configDir = customConfigDir;
+            }
             initialize();
             spdlog::info("ConfigurationManager initialized successfully");
         }
@@ -253,20 +330,39 @@ class ConfigurationManager
     void initialize()
     {
         spdlog::debug("Creating D-Bus connection");
-        connection = sdbus::createSessionBusConnection(serviceName);
+        connection = sdbus::createSessionBusConnection(
+            static_cast<sdbus::ServiceName>(constants::SERVICE_NAME));
 
         auto applicationsData = getApplicationsConfigs();
         spdlog::info("Found {} application configs", applicationsData.size());
-        std::string applicationObjectPath = buildApplicationsObjectPath();
+        
         for (const auto& [path, name] : applicationsData)
         {
-            applicationObjectPath += name;
+            std::string applicationObjectPath = buildApplicationsObjectPath(name);
             applicationsConfiguration[name] =
                 std::make_unique<ApplicationConfiguration>(
                     *connection,
-                    static_cast<sdbus::ObjectPath>(applicationObjectPath), path,
-                    interfaceName);
+                    static_cast<sdbus::ObjectPath>(applicationObjectPath),
+                    path,
+                    static_cast<sdbus::InterfaceName>(constants::INTERFACE_NAME));
         }
+    }
+
+    // Expands home directory in path (~/path to /home/user/path)
+    std::string expandHomeDirectory(const std::string& path) const
+    {
+        if (path.empty() || path.find("~/") != 0)
+        {
+            return path;
+        }
+        
+        const char* home = std::getenv("HOME");
+        if (!home)
+        {
+            throw std::runtime_error("HOME environment variable not set");
+        }
+        
+        return std::string(home) + path.substr(1);
     }
 
     std::vector<std::pair<std::string, std::string>>
@@ -274,16 +370,7 @@ class ConfigurationManager
     {
         spdlog::debug("Scanning config directory: {}", configDir);
         std::vector<std::pair<std::string, std::string>> applicationsData;
-        std::string actualConfigDir = configDir;
-        if (actualConfigDir.find("~/") == 0)
-        { // Maybe too much but why not ^_^
-            const char* home = std::getenv("HOME");
-            if (!home)
-            {
-                throw std::runtime_error("HOME environment variable not set");
-            }
-            actualConfigDir.replace(0, 1, home);
-        }
+        std::string actualConfigDir = expandHomeDirectory(configDir);
         try
         {
             for (const auto& entry : fs::directory_iterator(actualConfigDir))
@@ -311,34 +398,86 @@ class ConfigurationManager
         return applicationsData;
     }
 
-    std::string buildApplicationsObjectPath() const
+    std::string buildApplicationsObjectPath(const std::string& appName) const
     {
-        std::string path = "/" + serviceName;
+        std::string path = "/" + constants::SERVICE_NAME;
         std::replace(path.begin(), path.end(), '.', '/');
-        return path + "/Application/";
+        return path + "/Application/" + appName;
     }
 
-    const std::string configDir{"~/com.system.configurationManager/"};
-    const sdbus::ServiceName serviceName{"com.system.configurationManager"};
-    const sdbus::InterfaceName interfaceName{
-        "com.system.configurationManager.Application.Configuration"};
+    std::string configDir{constants::CONFIG_DIR_PATH};
+    const sdbus::InterfaceName interfaceName{constants::INTERFACE_NAME};
     std::unique_ptr<sdbus::IConnection> connection;
     std::unordered_map<std::string, std::unique_ptr<ApplicationConfiguration>>
         applicationsConfiguration;
+    static inline std::condition_variable shutdownCV;
+    static inline std::mutex shutdownMutex;
+    static inline bool shouldShutdown = false;
 };
 
-int main()
+// Signal handler
+void signalHandler(int signal)
+{
+    spdlog::info("Received signal: {}", signal);
+    
+    // Notify the waiting condition variable
+    {
+        std::lock_guard<std::mutex> lock(ConfigurationManager::shutdownMutex);
+        ConfigurationManager::shouldShutdown = true;
+    }
+    ConfigurationManager::shutdownCV.notify_all();
+    
+    // Also stop the manager
+    try {
+        ConfigurationManager::getInstance().stop();
+    } catch (const std::exception& e) {
+        spdlog::error("Error stopping manager: {}", e.what());
+    }
+}
+
+int main(int argc, char* argv[])
 {
     initialize_logging();
+    
+    // Parse command line arguments
+    std::string configDir;
+    bool verbose = false;
+    
+    CLI::App app{"D-Bus Configuration Manager Service"};
+    app.add_option("--config-dir", configDir, "Configuration directory")
+        ->default_val(constants::CONFIG_DIR_PATH);
+    app.add_flag("-v,--verbose", verbose, "Enable verbose logging");
+    
+    try {
+        app.parse(argc, argv);
+    } catch (const CLI::ParseError &e) {
+        return app.exit(e);
+    }
+    
+    if (verbose)
+    {
+        spdlog::set_level(spdlog::level::debug);
+        spdlog::debug("Verbose logging enabled");
+    }
+    
     try
     {
-        spdlog::info("Starting ConfigurationManager");
-        auto& manager = ConfigurationManager::getInstance();
+        // Set up signal handling
+        std::signal(SIGINT, signalHandler);
+        std::signal(SIGTERM, signalHandler);
+        
+        spdlog::info("Starting ConfigurationManager with config dir: {}", configDir);
+        auto& manager = ConfigurationManager::getInstance(configDir);
         manager.run();
         spdlog::info("ConfigurationManager running");
-        while (1)
-        {
-        }
+        
+        // Wait for shutdown signal
+        std::unique_lock<std::mutex> lock(ConfigurationManager::shutdownMutex);
+        ConfigurationManager::shutdownCV.wait(lock, []{
+            return ConfigurationManager::shouldShutdown;
+        });
+        
+        spdlog::info("Shutting down ConfigurationManager");
     }
     catch (const std::exception& e)
     {
