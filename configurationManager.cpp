@@ -264,7 +264,7 @@ int main() {
         auto& manager = ConfigurationManager::getInstance();
         manager.run();
         spdlog::info("ConfigurationManager running");
-        sleep(1000);
+        while(1) {}
     } catch (const std::exception& e) {
         spdlog::critical("Fatal error: {}", e.what());
         return 1;
