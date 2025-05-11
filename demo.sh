@@ -47,6 +47,29 @@ wait_for_enter
 
 clear
 print_separator
+echo "Now I will execute another command to change the configuration:"
+echo
+echo "gdbus call -e -d com.system.configurationManager \\"
+echo "            -o /com/system/configurationManager/Application/confManagerApplication1 \\"
+echo "            -m com.system.configurationManager.Application.Configuration.ChangeConfiguration \\"
+echo "            \"Timeout\" \"<int64 500>\""
+echo
+print_separator
+wait_for_enter
+
+gdbus call -e -d com.system.configurationManager \
+            -o /com/system/configurationManager/Application/confManagerApplication1 \
+            -m com.system.configurationManager.Application.Configuration.ChangeConfiguration \
+            "Timeout" "<int64 500>"
+
+echo
+print_separator
+echo "Look back at the client output - you should see new speed of output as new timeout is applied"
+print_separator
+wait_for_enter
+
+clear
+print_separator
 echo "Now I will execute this command to get the current configuration:"
 echo
 echo "gdbus call -e -d com.system.configurationManager \\"

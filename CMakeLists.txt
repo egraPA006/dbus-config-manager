@@ -124,6 +124,14 @@ target_link_libraries(client PRIVATE
     CLI11::CLI11
 )
 
+find_program(CLANG_FORMAT "clang-format")
+if(CLANG_FORMAT)
+    add_custom_target(format
+        COMMAND ${CLANG_FORMAT} -i -style=file ${ALL_SOURCE_FILES}
+        COMMENT "Formatting all source files..."
+    )
+endif()
+
 install(TARGETS client manager
   RUNTIME DESTINATION .
 )
