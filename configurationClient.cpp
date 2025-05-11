@@ -180,14 +180,11 @@ int main(int argc, char* argv[]) {
     initialize_logging();
 
     try {
-        // Default values
         int64_t timeout = 1000;
         std::string phrase = "Hey";
         bool verbose = false;
 
         CLI::App app{"Configuration Client Application"};
-
-        // Add command line options
         app.add_option("--timeout", timeout, "Timeout in milliseconds")
             ->check(CLI::PositiveNumber)
             ->default_val(1000);
