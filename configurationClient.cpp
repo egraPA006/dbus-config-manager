@@ -15,7 +15,7 @@ using json = nlohmann::json;
 
 static void initialize_logging() {
     auto logger = spdlog::stdout_color_mt("configuration_client");
-    logger->set_level(spdlog::level::debug);
+    logger->set_level(spdlog::level::info);
     spdlog::set_default_logger(logger);
 }
 
@@ -24,7 +24,7 @@ public:
     ClientApplication() 
         : ClientApplication(1000, "Hey", true) {}
 
-    ClientApplication(uint32_t timeout, const std::string& timeoutPhrase) 
+    ClientApplication(int64_t timeout, const std::string& timeoutPhrase) 
         : ClientApplication(timeout, timeoutPhrase, true) {}
 
     ~ClientApplication() {
@@ -36,7 +36,7 @@ public:
     }
 
 private:
-    ClientApplication(uint32_t timeout, const std::string& timeoutPhrase, bool forceCreate)
+    ClientApplication(int64_t timeout, const std::string& timeoutPhrase, bool forceCreate)
         : timeout(timeout),
           timeoutPhrase(timeoutPhrase),
           configPath(std::string(std::getenv("HOME")) + "/com.system.configurationManager/confManagerApplication1.json"),
@@ -61,7 +61,6 @@ private:
     void loadConfiguration() {
         try {
             spdlog::debug("Loading configuration with default timeout {} and phrase {}", timeout, timeoutPhrase);
-            
             if (!fs::exists(configPath)) {
                 fs::create_directories(fs::path(configPath).parent_path());
             }
@@ -77,7 +76,7 @@ private:
 
             {
                 std::lock_guard<std::mutex> lock(configMutex);
-                timeout = config["Timeout"].get<uint32_t>();
+                timeout = config["Timeout"].get<int64_t>();
                 timeoutPhrase = config["TimeoutPhrase"].get<std::string>();
             }
             
@@ -113,19 +112,17 @@ private:
     void handleConfigurationChange(const std::map<std::string, sdbus::Variant>& newConfig) {
         try {
             spdlog::info("Configuration change received");
-
+            spdlog::debug("New configuration size: {}, first key: {}", newConfig.size(), newConfig.begin()->first);
             {
                 std::lock_guard<std::mutex> lock(configMutex);
-                
                 if (newConfig.count("Timeout")) {
                     try {
-                        timeout = newConfig.at("Timeout").get<uint32_t>();
+                        timeout = newConfig.at("Timeout").get<int64_t>();
                         spdlog::debug("Updated Timeout to {}", timeout);
                     } catch (const std::exception& e) {
                         spdlog::error("Failed to get Timeout: {}", e.what());
                     }
                 }
-
                 if (newConfig.count("TimeoutPhrase")) {
                     try {
                         timeoutPhrase = newConfig.at("TimeoutPhrase").get<std::string>();
@@ -152,7 +149,7 @@ private:
         });
     }
 
-    uint32_t getCurrentTimeout() {
+    int64_t getCurrentTimeout() {
         std::lock_guard<std::mutex> lock(configMutex);
         return timeout;
     }
@@ -164,7 +161,7 @@ private:
 
     // Configuration
     std::string configPath;
-    uint32_t timeout;
+    int64_t timeout;
     std::string timeoutPhrase;
     std::mutex configMutex;
     bool forceCreateConf;

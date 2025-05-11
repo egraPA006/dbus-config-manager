@@ -35,7 +35,7 @@ namespace fs = std::filesystem;
 
 static void initialize_logging() {
     auto logger = spdlog::stdout_color_mt("config_manager");
-    logger->set_level(spdlog::level::debug);
+    logger->set_level(spdlog::level::info);
     spdlog::set_default_logger(logger);
 }
 
