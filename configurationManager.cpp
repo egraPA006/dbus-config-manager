@@ -7,19 +7,52 @@
 #include <algorithm>
 #include <unordered_set>
 
+using config_dict = std::map<std::string, sdbus::Variant>;
+
+// TODO: add error handling
+// TODO: add logs
 class ApplicationConfiguration {
 public:
-    ApplicationConfiguration(sdbus::IConnection& connection, const std::string& objectPath,
-         const std::string& configPath) {
-        
+    ApplicationConfiguration(sdbus::IConnection& connection, const sdbus::ObjectPath& objectPath,
+         const std::string& configPath, const sdbus::InterfaceName interfaceName) :
+         interfaceName(interfaceName) {
+        parseConfig(configPath);
+        object = sdbus::createObject(connection, objectPath);
+        registerMethods();
+    }
+    void emitConfigurationChanged() {
+        object->emitSignal("configurationChanged")
+            .onInterface("com.system.configurationManager.Application.Configuration")
+            .withArguments(configuration); 
     }
 private:
+    // TODO: implement
     void parseConfig(const std::string& configPath) {
 
     }
-    void changeConfiguration(const std::string& key, sdbus::Variant) {
-
+    void changeConfiguration(const std::string& key, sdbus::Variant val) {
+        configuration[key] = val;
+        // TODO: add dbus error
     }
+    config_dict getConfiguration() {
+        return configuration;
+    }
+    void registerMethods() {
+        object->addVTable(
+            sdbus::registerMethod("GetConfiguration").implementedAs([this]() { return this->getConfiguration(); }))
+            .forInterface(interfaceName);
+         object->addVTable(
+            sdbus::registerMethod("ChangeConfiguration").implementedAs(
+                [this](const std::string& key, sdbus::Variant val) { return this->changeConfiguration(key, val); }
+            ),
+            sdbus::registerSignal("configurationChanged").withParameters<config_dict>()
+            )
+            .forInterface(interfaceName);
+    }
+    std::unique_ptr<sdbus::IObject> object;
+    config_dict configuration;
+    sdbus::InterfaceName interfaceName;
+    
 };
 
 class ConfigurationManager {
@@ -33,52 +66,73 @@ public:
     ConfigurationManager& operator=(const ConfigurationManager&) = delete;
     ConfigurationManager(ConfigurationManager&&) = delete;
     ConfigurationManager& operator=(ConfigurationManager&&) = delete;
+
+    std::vector<std::string> getApplicationsNames() {
+        std::vector<std::string> appNames;
+        for (const auto& el : applicationsConfiguration) {
+            appNames.push_back(el.first);
+        }
+        return appNames;
+    }
 private:
     ConfigurationManager() {
+        std::vector<std::pair<std::string, std::string>> applicationsData;
+        std::string applicationObjectPath;
         connection = sdbus::createSessionBusConnection(serviceName);
-
-        applicationObjectPath = serviceName;
-        std::replace(applicationObjectPath.begin(), applicationObjectPath.end(), '.', '/');
-        applicationObjectPath += "/Application/";
-        // auto root_obj = sdbus::createObject(*connection, objectPath); // Not needed yet
+        applicationsObjectPath = serviceName;
+        std::replace(applicationsObjectPath.begin(), applicationsObjectPath.end(), '.', '/');
+        applicationsObjectPath += "/Application/";        
         try {
-            std::vector<std::pair<std::string, std::string>> applicationData = getApplicationConfigs();
+            applicationsData = getApplicationsConfigs();
         } catch (const std::exception& e) {
             throw std::runtime_error("Configuration init failed: " + std::string(e.what()));
         }
-        
-
+        for (const auto& [path, name] : applicationsData)  {
+            applicationObjectPath = applicationsObjectPath + name;
+            applicationsConfiguration[name] = std::make_unique<ApplicationConfiguration>(
+                *connection, static_cast<sdbus::ObjectPath>(applicationObjectPath), path, interfaceName
+            );
+        }
     }
     /**
      * @return vector<path to app config json, name of config json>
      * @throws runtime error if could not access config directory
      * @note if more than one application has same name, peaks one random
      */
-    std::vector<std::pair<std::string, std::string>> getApplicationConfigs() {
-        std::vector<std::pair<std::string, std::string>> applicationData;
-        std::unordered_set<std::string> uniqueNames;      
+    std::vector<std::pair<std::string, std::string>> getApplicationsConfigs() {
+        std::vector<std::pair<std::string, std::string>> applicationsData;
+        std::unordered_set<std::string> uniqueNames;
+        std::string filename;
+        size_t unique_size;
         if (configDir.find("~/") == 0) {
             configDir.replace(0, 1, std::getenv("HOME"));
         }
         try {
             for (const auto& entry : std::filesystem::recursive_directory_iterator(configDir)) {
                 if (entry.is_regular_file() && entry.path().extension() == ".json") {
-                    
-                    applicationData.emplace_back(
+                    filename = entry.path().filename().string();
+                    unique_size = uniqueNames.size();
+                    uniqueNames.insert(filename);
+                    if (uniqueNames.size() == unique_size) {
+                        continue; // yep, just skip duplicates
+                    }
+                    applicationsData.emplace_back(
                         entry.path().string(),
-                        entry.path().filename().string()
+                        filename
                     );
                 }
             }
         } catch (const std::filesystem::filesystem_error& e) {
             throw std::runtime_error( "Error accessing config directory: " + std::string(e.what()));
         }        
-        return applicationData;
+        return applicationsData;
     }
-    std::string configDir = "~/com.system.configurationManager/";
-    const std::string serviceName = "com.system.configurationManager";
-    std::string applicationObjectPath;
+    std::string configDir{"~/com.system.configurationManager/"};
+    const sdbus::ServiceName serviceName{"com.system.configurationManager"};
+    const sdbus::InterfaceName interfaceName{"com.system.configurationManager.Application.Configuration"};
+    std::string applicationsObjectPath;
     std::unique_ptr<sdbus::IConnection> connection;
+    std::unordered_map<std::string, std::unique_ptr<ApplicationConfiguration>> applicationsConfiguration;
 };
 
 int main() {
