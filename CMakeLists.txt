@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.14)
 project(Dbus-config-manager)
 
-set(SDBUSCPP_MIN_VERSION "2.0.0")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(sdbus-c++ ${SDBUSCPP_MIN_VERSION} QUIET)
+find_package(sdbus-c++ 2.0.0 QUIET)
 find_package(spdlog QUIET)
+find_package(nlohmann_json 3.12.0 QUIET)
 
 if(NOT sdbus-c++_FOUND)
     # Did not work automatically :(
@@ -62,16 +62,38 @@ if(NOT spdlog_FOUND)
     FetchContent_MakeAvailable(spdlog)
 endif()
 
+if(NOT nlohmann_json_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.12.0
+    )
+    FetchContent_GetProperties(nlohmann_json)
+    if(NOT nlohmann_json_POPULATED)
+        FetchContent_Populate(nlohmann_json)
+        
+        # nlohmann_json is a header-only library, so we just need to make the includes available
+        add_library(nlohmann_json INTERFACE IMPORTED)
+        set_target_properties(nlohmann_json PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${nlohmann_json_SOURCE_DIR}/include"
+        )
+    endif()
+    add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+endif()
+
 add_executable(manager configurationManager.cpp)
 add_executable(client configurationClient.cpp)
 
 target_link_libraries(manager PRIVATE
     sdbus-c++::sdbus-c++
     spdlog::spdlog
+    nlohmann_json::nlohmann_json
 )
 target_link_libraries(client PRIVATE
     sdbus-c++::sdbus-c++
     spdlog::spdlog
+    nlohmann_json::nlohmann_json
 )
 
 install(TARGETS client manager

@@ -6,8 +6,12 @@
 #include <filesystem>
 #include <algorithm>
 #include <unordered_set>
+#include <nlohmann/json.hpp>
 
 using config_dict = std::map<std::string, sdbus::Variant>;
+using json = nlohmann::json;
+namespace fs = std::filesystem;
+
 
 // TODO: add error handling
 // TODO: add logs
@@ -28,7 +32,7 @@ public:
 private:
     // TODO: implement
     void parseConfig(const std::string& configPath) {
-
+        json configJson;
     }
     void changeConfiguration(const std::string& key, sdbus::Variant val) {
         configuration[key] = val;
@@ -108,7 +112,7 @@ private:
             configDir.replace(0, 1, std::getenv("HOME"));
         }
         try {
-            for (const auto& entry : std::filesystem::recursive_directory_iterator(configDir)) {
+            for (const auto& entry : fs::recursive_directory_iterator(configDir)) {
                 if (entry.is_regular_file() && entry.path().extension() == ".json") {
                     filename = entry.path().filename().string();
                     unique_size = uniqueNames.size();
@@ -122,7 +126,7 @@ private:
                     );
                 }
             }
-        } catch (const std::filesystem::filesystem_error& e) {
+        } catch (const fs::filesystem_error& e) {
             throw std::runtime_error( "Error accessing config directory: " + std::string(e.what()));
         }        
         return applicationsData;
