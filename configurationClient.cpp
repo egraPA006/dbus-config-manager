@@ -9,6 +9,7 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <fstream>
+#include "CLI/CLI.hpp"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -177,9 +178,38 @@ private:
 
 int main(int argc, char* argv[]) {
     initialize_logging();
+
     try {
-        ClientApplication app;
-        app.run();
+        // Default values
+        int64_t timeout = 1000;
+        std::string phrase = "Hey";
+        bool verbose = false;
+
+        CLI::App app{"Configuration Client Application"};
+
+        // Add command line options
+        app.add_option("--timeout", timeout, "Timeout in milliseconds")
+            ->check(CLI::PositiveNumber)
+            ->default_val(1000);
+
+        app.add_option("--phrase", phrase, "Timeout message")
+            ->default_val("Hey");
+
+        app.add_flag("-v,--verbose", verbose, "Enable verbose logging");
+
+        CLI11_PARSE(app, argc, argv);
+
+        if (verbose) {
+            spdlog::set_level(spdlog::level::debug);
+            spdlog::debug("Verbose logging enabled");
+        }
+
+        spdlog::info("Starting with configuration - timeout: {}ms, phrase: '{}'", 
+                    timeout, phrase);
+
+        ClientApplication client_app(timeout, phrase);
+        client_app.run();
+
     } catch (const std::exception& e) {
         spdlog::critical("Application failed: {}", e.what());
         return 1;
