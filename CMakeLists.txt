@@ -8,6 +8,19 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(sdbus-c++ 2.0.0 QUIET)
 find_package(spdlog QUIET)
 find_package(nlohmann_json 3.12.0 QUIET)
+find_library(SYSTEMD_LIB 
+    NAMES systemd
+    PATHS /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib
+    QUIET
+    NO_DEFAULT_PATH
+)
+set(SYSTEMD_INSTALL_REQUIRED OFF)
+if(NOT SYSTEMD_LIB AND sdbus-c++_FOUND)
+    message(FATAL_ERROR "libsystemd not found - install systemd development package")
+elseif(NOT SYSTEMD_LIB)
+    set(SYSTEMD_INSTALL_REQUIRED ON)
+endif()
+
 
 if(NOT sdbus-c++_FOUND)
     # Did not work automatically :(
@@ -25,6 +38,7 @@ if(NOT sdbus-c++_FOUND)
                     -DCMAKE_BUILD_TYPE=Release
                     -DBUILD_SHARED_LIBS=OFF
                     -DSDBUSCPP_BUILD_DOCS=OFF
+                    -DSDBUSCPP_BUILD_LIBSYSTEMD=${SYSTEMD_INSTALL_REQUIRED}
                     ${sdbus-cpp_SOURCE_DIR}
             WORKING_DIRECTORY ${sdbus-cpp_BINARY_DIR}
             RESULT_VARIABLE configure_result
@@ -89,11 +103,13 @@ target_link_libraries(manager PRIVATE
     sdbus-c++::sdbus-c++
     spdlog::spdlog
     nlohmann_json::nlohmann_json
+    ${SYSTEMD_LIB}
 )
 target_link_libraries(client PRIVATE
     sdbus-c++::sdbus-c++
     spdlog::spdlog
     nlohmann_json::nlohmann_json
+    ${SYSTEMD_LIB}
 )
 
 install(TARGETS client manager
